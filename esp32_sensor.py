@@ -5,8 +5,9 @@ from umqtt.simple import MQTTClient
 import machine
 import dht
 
+
 class ESP32DHTMqtt:
-    """ESP32 dengan sensor DHT dan MQTT publish"""
+    """ESP32 dengan sensor DHT dan integrasi MQTT"""
 
     def __init__(self, broker_host, client_id, topics_config):
         self.broker_host = broker_host
@@ -20,42 +21,49 @@ class ESP32DHTMqtt:
         self.led_yellow = machine.Pin(19, machine.Pin.OUT)
         self.led_green = machine.Pin(20, machine.Pin.OUT)
 
-        self.dht_sensor = dht.DHT11(machine.Pin(21))
-
         self.control_led = machine.Pin(22, machine.Pin.OUT)
 
-        print(f"ESP32 DHT MQTT Sensor - Client ID: {client_id}")
+        self.dht_sensor = dht.DHT11(machine.Pin(21))
+
+        self.manual_override = False
+
+        print(f"[INIT] ESP32 DHT MQTT Sensor - Client ID: {client_id}")
 
     def connect_wifi(self, ssid, password, timeout=15):
         """Hubungkan ke WiFi"""
-        print(f"WiFi Connecting to {ssid}...")
+        print(f"[WiFi] Connecting to {ssid}...")
         self.wifi.active(True)
         self.wifi.connect(ssid, password)
 
         start = utime.time()
         while not self.wifi.isconnected():
             if utime.time() - start > timeout:
-                print("WiFi Connection timeout!")
+                print("[WiFi] Connection timeout!")
                 return False
             print(".", end="")
             utime.sleep_ms(500)
 
-        print(f"\nWiFi Connected. IP: {self.wifi.ifconfig()[0]}")
+        print(f"\n[WiFi] Connected. IP: {self.wifi.ifconfig()[0]}")
         return True
-
+    
     def on_message(self, topic, msg):
-        """Terima pesan dari GUI untuk kontrol LED"""
+        """Terima pesan dari dashboard untuk kontrol LED manual"""
         topic = topic.decode()
-        message = msg.decode()
+        message = msg.decode().lower()
         print(f"[MQTT] Pesan masuk dari {topic}: {message}")
 
-        if topic == self.topics["sensor_led"]:
+        if topic == self.topics["led_control"]:
             if message == "on":
                 self.control_led.on()
-                print("[LED] LED manual dinyalakan")
+                self.manual_override = False
+                print("[LED] Mode otomatis AKTIF (kontrol suhu kembali)")
             elif message == "off":
                 self.control_led.off()
-                print("[LED] LED manual dimatikan")
+                self.manual_override = True
+                self.led_red.off()
+                self.led_yellow.off()
+                self.led_green.off()
+                print("[LED] Mode manual AKTIF - Semua LED dimatikan")
 
     def connect_mqtt(self):
         """Hubungkan ke broker MQTT"""
@@ -64,8 +72,8 @@ class ESP32DHTMqtt:
             self.mqtt = MQTTClient(self.client_id, self.broker_host)
             self.mqtt.set_callback(self.on_message)
             self.mqtt.connect()
-            self.mqtt.subscribe(self.topics["sensor_led"])
-            print("[MQTT] Connected & subscribed to LED topic.")
+            self.mqtt.subscribe(self.topics["led_control"])
+            print(f"[MQTT] Connected & subscribed to: {self.topics['led_control']}")
             return True
         except Exception as e:
             print(f"[MQTT] Connection error: {e}")
@@ -103,46 +111,67 @@ class ESP32DHTMqtt:
             return "GREEN"
 
     def publish_sensor_data(self):
-        """Kirim data sensor ke broker"""
+        """Kirim data sensor dan status LED ke broker"""
         temperature, humidity = self.read_dht_data()
         if temperature is None or humidity is None:
             print("[Publish] Skip (invalid data)")
             return
 
-        led_status = self.update_led_status(temperature)
+        if not self.manual_override:
+            led_status = self.update_led_status(temperature)
+        else:
+            led_status = "OFF"
 
-        payload_temp = ujson.dumps({"temperature": temperature, "timestamp": int(utime.time())})
-        payload_hum = ujson.dumps({"humidity": humidity, "timestamp": int(utime.time())})
-        payload_led = ujson.dumps({"led": led_status, "timestamp": int(utime.time())})
+        payload_temp = ujson.dumps({
+            "temperature": temperature,
+            "timestamp": int(utime.time())
+        })
+        payload_hum = ujson.dumps({
+            "humidity": humidity,
+            "timestamp": int(utime.time())
+        })
+        payload_led = ujson.dumps({
+            "led": led_status,
+            "timestamp": int(utime.time())
+        })
 
         self.mqtt.publish(self.topics["sensor_temp"], payload_temp)
         self.mqtt.publish(self.topics["sensor_humidity"], payload_hum)
-        self.mqtt.publish("sensor/esp32/2/led", payload_led)
+        self.mqtt.publish(self.topics["led_status"], payload_led)
 
-        print(f"[Publish] Temp={temperature:.2f}C, Hum={humidity:.2f}%, LED={led_status}")
+        print(f"[Publish] Temp={temperature:.2f}°C | Hum={humidity:.2f}% | LED={led_status}")
 
     def run(self, publish_interval=5):
-        """Loop utama"""
+        """Loop utama (stabil dan reconnect otomatis)"""
         print("[System] Starting main loop...")
         while True:
             try:
-                self.mqtt.check_msg()
+                try:
+                    self.mqtt.ping()
+                except:
+                    print("[MQTT] Lost connection. Reconnecting...")
+                    self.connect_mqtt()
+
                 self.publish_sensor_data()
+
+                self.mqtt.check_msg()
+
                 utime.sleep(publish_interval)
             except Exception as e:
                 print(f"[Error] {e}")
                 utime.sleep(2)
 
 def run_esp32_dht():
-    """Setup utama"""
     BROKER = "test.mosquitto.org"
     CLIENT_ID = "esp-sensor-suhu-2"
     SSID = "YourSSID"
     PASSWORD = "YourPassword"
+
     TOPICS = {
         "sensor_temp": "sensor/esp32/2/temperature",
         "sensor_humidity": "sensor/esp32/2/humidity",
-        "sensor_led": "sensor/esp32/2/led"
+        "led_status": "sensor/esp32/2/led/status",
+        "led_control": "sensor/esp32/2/led/control"
     }
 
     esp = ESP32DHTMqtt(BROKER, CLIENT_ID, TOPICS)
