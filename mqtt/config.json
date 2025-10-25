@@ -1,0 +1,21 @@
+{
+  "broker": {
+    "host": "test.mosquitto.org",
+    "port": 1883,
+    "username": null,
+    "password": null,
+    "keepalive": 60
+  },
+  "topics": {
+    "sensor_temp": "sensor/esp32/2/temperature",
+    "sensor_humidity": "sensor/esp32/2/humidity",
+    "led_status": "sensor/esp32/2/led/status",
+    "led_control": "sensor/esp32/2/led/control"
+  },
+  "dashboard": {
+    "width": 1000,
+    "height": 700,
+    "title": "IoT Dashboard - Real-time Monitoring",
+    "refresh_rate": 500
+  }
+}
